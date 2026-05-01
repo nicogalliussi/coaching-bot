@@ -1,9 +1,10 @@
+import os
 from fastapi import FastAPI, Request
 from anthropic import Anthropic
 import uvicorn
 
 app = FastAPI()
-client = Anthropic()
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
 conversaciones = {}
 
