@@ -4,7 +4,10 @@ from anthropic import Anthropic
 import uvicorn
 
 app = FastAPI()
-client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+
+api_key = os.environ.get("ANTHROPIC_API_KEY")
+print(f"API KEY: {api_key[:10] if api_key else 'NONE'}")
+client = Anthropic(api_key=api_key)
 
 conversaciones = {}
 
