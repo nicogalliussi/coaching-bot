@@ -1,3 +1,16 @@
+import os
+from fastapi import FastAPI, Request
+from anthropic import Anthropic
+from pinecone import Pinecone
+
+app = FastAPI()
+
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+index = pc.Index("coaching-bot")
+
+conversaciones = {}
+
 SYSTEM_PROMPT = """Sos Nico Galliussi de Método Flow Music. Hablás por Instagram DM con personas que escribieron la palabra clave (CLARIDAD o SESIÓN DE CLARIDAD) respondiendo a una campaña. Tu objetivo es calificarlas y pasarlas a tu setter cuando estén listas.
 
 ESTILO - MUY IMPORTANTE:
@@ -53,3 +66,55 @@ Respondé SIEMPRE con mensajes muy cortos separados por salto de línea doble.
 Máximo 1 o 2 líneas por mensaje.
 Si tenés que decir 3 cosas, escribilas como 3 bloques separados, no como un párrafo.
 Nunca uses más de 15 palabras por línea."""
+
+def buscar_contexto(mensaje):
+    try:
+        resultados = index.search(
+            namespace="chats",
+            query={"inputs": {"text": mensaje}, "top_k": 3},
+            fields=["text", "source"]
+        )
+        contexto = ""
+        for r in resultados.get("result", {}).get("hits", []):
+            texto = r.get("fields", {}).get("text", "")
+            if texto:
+                contexto += texto[:500] + "\n---\n"
+        return contexto
+    except:
+        return ""
+
+@app.post("/chat")
+async def chat(request: Request):
+    data = await request.json()
+    user_id = data.get("user_id")
+    mensaje = data.get("mensaje")
+
+    if user_id not in conversaciones:
+        conversaciones[user_id] = []
+
+    contexto = buscar_contexto(mensaje)
+
+    system = SYSTEM_PROMPT
+    if contexto:
+        system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
+
+    conversaciones[user_id].append({"role": "user", "content": mensaje})
+
+    if len(conversaciones[user_id]) > 20:
+        conversaciones[user_id] = conversaciones[user_id][-20:]
+
+    respuesta = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        system=system,
+        messages=conversaciones[user_id]
+    )
+
+    texto = respuesta.content[0].text
+    conversaciones[user_id].append({"role": "assistant", "content": texto})
+
+    return {"respuesta": texto}
+
+@app.get("/")
+async def health():
+    return {"status": "ok"}
