@@ -120,8 +120,15 @@ async def chat(request: Request):
     conversaciones[user_id].append({"role": "assistant", "content": texto})
 
     lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+    while len(lineas) < 4:
+        lineas.append("")
 
-    return {"respuesta": texto, "mensajes": lineas}
+    return {
+        "msg1": lineas[0] if len(lineas) > 0 else "",
+        "msg2": lineas[1] if len(lineas) > 1 else "",
+        "msg3": lineas[2] if len(lineas) > 2 else "",
+        "msg4": lineas[3] if len(lineas) > 3 else ""
+    }
 
 @app.get("/")
 async def health():
