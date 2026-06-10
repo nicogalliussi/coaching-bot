@@ -2,3 +2,4 @@ fastapi
 uvicorn
 anthropic
 pinecone
+psycopg2-binary
