@@ -67,7 +67,7 @@ def save_history(user_id, messages):
         print(f"Error save_history: {e}")
 
 async def enviar_mensaje_manychat(subscriber_id, texto):
-    url = "https://api.manychat.com/fb/sending/sendContent"
+    url = "https://api.manychat.com/ig/sending/sendContent"
     headers = {
         "Authorization": f"Bearer {MANYCHAT_API_KEY}",
         "Content-Type": "application/json"
@@ -251,6 +251,11 @@ async def chat(request: Request):
     data = await request.json()
     user_id = data.get("user_id")
     mensaje = data.get("mensaje")
+
+    if mensaje and mensaje.strip().lower() == "resetbot":
+        save_history(user_id, [])
+        await enviar_mensaje_manychat(user_id, "Conversación reseteada ✅")
+        return {"status": "ok"}
 
     token = object()
     pending[user_id] = token
