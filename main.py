@@ -127,7 +127,7 @@ user_buffers = {}   # user_id -> [mensajes]
 user_futures = {}   # user_id -> [futures]
 user_timers = {}    # user_id -> Task
 
-DEBOUNCE_SECONDS = 25
+DEBOUNCE_SECONDS = 10
 
 async def procesar_mensajes(user_id: str):
     await asyncio.sleep(DEBOUNCE_SECONDS)
@@ -215,4 +215,3 @@ async def chat(request: Request):
 @app.get("/")
 async def health():
     return {"status": "ok"}
-
