@@ -82,7 +82,8 @@ async def enviar_mensaje_manychat(subscriber_id, texto):
         }
     }
     async with httpx.AsyncClient() as client_http:
-        await client_http.post(url, json=payload, headers=headers)
+        r = await client_http.post(url, json=payload, headers=headers)
+        print(f"ManyChat: {r.status_code} - {r.text}")
 
 async def procesar_mensaje(user_id, mensaje, token):
     await asyncio.sleep(25)
