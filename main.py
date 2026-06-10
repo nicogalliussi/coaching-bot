@@ -67,7 +67,7 @@ def save_history(user_id, messages):
         print(f"Error save_history: {e}")
 
 async def enviar_mensaje_manychat(subscriber_id, texto):
-    url = "https://api.manychat.com/ig/sending/sendContent"
+    url = "https://api.manychat.com/fb/sending/sendContent"
     headers = {
         "Authorization": f"Bearer {MANYCHAT_API_KEY}",
         "Content-Type": "application/json"
