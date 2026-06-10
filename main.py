@@ -12,8 +12,6 @@ client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index = pc.Index("coaching-bot")
 
-pending = {}
-
 def get_db():
     return psycopg2.connect(os.environ.get("DATABASE_URL"))
 
@@ -89,87 +87,24 @@ Nunca pongas todo junto en un párrafo.
 
 FLUJO - seguilo en este orden:
 
-1. ARRANQUE:
-"Hola [nombre] cómo estás?.."
-"Te hago algunas preguntas para ver cómo o si te puedo ayudar realmente... ok..!?"
-(esperás respuesta)
-"Ya enseñás online..? Ofrecés algún curso..?"
+1. ARRANQUE
+2. PERFIL
+3. SITUACIÓN ACTUAL (incluye preguntas sobre seguidores y anuncios)
+4. OBJETIVO
+5. LIMITACIONES
+6. DIAGNÓSTICO + OFERTA (después de limitaciones, conecta situación con problema real, luego ofrece sesión)
+7. SI AGENDA: confirma + [[HUMANO]]
 
-2. PERFIL:
-Preguntás si el perfil que usa es para su docencia o es más personal/artístico.
+DIAGNÓSTICOS:
+→ Perfil artístico: "el perfil artístico atrae fans, no alumnos.."
+→ Solo clases: "con clases siempre hay un techo económico.."
+→ Low ticket: "los cursos baratos al principio venden pero se estancan.."
+→ Audiencia grande sin alumnos: "el problema está en convertir consultas en ventas.."
+→ No hace anuncios: "sin anuncios el crecimiento no es predecible.."
+→ Sin nicho: "sin nicho definido es muy difícil que funcione.."
+→ Tiene todo: [[HUMANO]]
 
-3. SITUACIÓN ACTUAL:
-Según lo que te dijo, preguntás:
-- Si tiene curso: cómo viene con las ventas y cuánto vale
-- Si solo da clases: cuántos alumnos tiene y cuánto cobra por mes
-- Si es presencial: idem
-También preguntás: "y tenés bastantes seguidores o todavía estás creciendo la cuenta..?"
-Y: "hacés publicidad paga o todo orgánico..?"
-
-4. OBJETIVO:
-"a dónde te gustaría llevar tus ganancias con esto..?"
-
-5. LIMITACIONES:
-"y qué sentís que está faltando para poder lograrlo..?"
-
-6. DIAGNÓSTICO + OFERTA - CRÍTICO:
-Después de que responde las limitaciones, combinás lo que dijo con lo que sabés de su situación y soltás 1 o 2 líneas que conectan su limitación con el problema real. Después ofrecés la sesión.
-
-Usá el diagnóstico que más aplica según su situación:
-
-→ SI TIENE PERFIL ARTÍSTICO O PERSONAL:
-"claro.. y parte de eso tiene que ver con el perfil.. el perfil artístico atrae fans, no alumnos.. son dos audiencias distintas.."
-
-→ SI SOLO DA CLASES (sin curso ni programa):
-"siis.. y eso pasa mucho cuando se está ofreciendo clases sueltas.. porque las personas te comparan con otros profes por precio y hay un techo económico difícil de romper.."
-
-→ SI TIENE CURSO LOW TICKET:
-"claro.. lo que pasa con los cursos de bajo precio es que al principio venden bien pero se estancan.. y si hacés anuncios, el costo por venta te come la rentabilidad.."
-
-→ SI TIENE AUDIENCIA GRANDE PERO NO TIENE ALUMNOS:
-"siis.. con audiencia y sin alumnos casi siempre el problema está en el proceso de convertir esas consultas en ventas.. no en conseguir más gente.."
-
-→ SI NO HACE ANUNCIOS:
-"claro.. y sin anuncios el crecimiento no es predecible.. dependés de que algo se haga viral o de que alguien te recomiende.."
-
-→ SI NO TIENE NICHO DEFINIDO:
-"siis.. y sin nicho definido es muy difícil que el contenido o los anuncios funcionen.. todo se diluye.."
-
-→ SI TIENE TODO (high ticket + anuncios + alumnos + audiencia grande):
-No hagas diagnóstico. Incluí [[HUMANO]] para que el setter revise el caso.
-
-Después del diagnóstico, ofrecés la sesión así:
-"mirá, para eso justamente es la Sesión de Claridad.."
-"es sin costo, 45 min"
-"revisamos tu situación y vemos si te puedo ayudar de verdad.."
-"agendás acá: https://www.flow-social.net/sesionclaridad"
-
-7. SI AGENDA O CONFIRMA:
-"buenísimo! te espero ahí.. 🙌"
-Incluí [[HUMANO]] para que el setter tome el control.
-
-CUÁNDO INCLUIR [[HUMANO]] AL FINAL:
-- Ya agendaron la sesión
-- Preguntan cuánto cuesta el programa o la mentoría
-- Tienen todo resuelto (high ticket + anuncios + alumnos + audiencia grande)
-- La conversación sale totalmente del guión
-- Alguien está molesto o agresivo
-
-Cuando incluís [[HUMANO]], respondés normal primero y agregás [[HUMANO]] al final del texto.
-
-NUNCA:
-- Menciones precios del programa ni de la mentoría
-- Uses párrafos, todo va en líneas separadas
-- Digas que sos un bot o que viene alguien del equipo
-- Hagas más de UNA pregunta por mensaje
-- Hagas más de UN diagnóstico
-
-EJEMPLOS DE TUS FRASES REALES:
-- "acá leyendo [nombre].!"
-- "Ah mira, bueno, bien... metiéndole"
-- "okok, vale.."
-- "claro claro.."
-- "siis.." """
+[[HUMANO]] cuando: agendaron, preguntan precio, tienen todo, sale del guión, molesto."""
 
 def buscar_contexto(mensaje):
     try:
@@ -187,27 +122,32 @@ def buscar_contexto(mensaje):
     except:
         return ""
 
-@app.post("/chat")
-async def chat(request: Request):
-    data = await request.json()
-    user_id = data.get("user_id")
-    mensaje = data.get("mensaje")
+# Debounce state
+user_buffers = {}   # user_id -> [mensajes]
+user_futures = {}   # user_id -> [futures]
+user_timers = {}    # user_id -> Task
 
-    if not user_id or not mensaje:
-        return {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+DEBOUNCE_SECONDS = 25
 
-    if mensaje.strip().lower() == "resetbot":
-        save_history(user_id, [])
-        return {"msg1": "Conversación reseteada ✅", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+async def procesar_mensajes(user_id: str):
+    await asyncio.sleep(DEBOUNCE_SECONDS)
+
+    mensajes = user_buffers.pop(user_id, [])
+    futures = user_futures.pop(user_id, [])
+    user_timers.pop(user_id, None)
+
+    if not mensajes or not futures:
+        return
+
+    mensaje_combinado = "\n".join(mensajes)
 
     historia = get_history(user_id)
-
-    contexto = buscar_contexto(mensaje)
+    contexto = buscar_contexto(mensaje_combinado)
     system = SYSTEM_PROMPT
     if contexto:
         system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
 
-    historia.append({"role": "user", "content": mensaje})
+    historia.append({"role": "user", "content": mensaje_combinado})
     if len(historia) > 20:
         historia = historia[-20:]
 
@@ -229,7 +169,7 @@ async def chat(request: Request):
     while len(lineas) < 4:
         lineas.append("")
 
-    return {
+    result = {
         "msg1": lineas[0],
         "msg2": lineas[1],
         "msg3": lineas[2],
@@ -237,6 +177,42 @@ async def chat(request: Request):
         "handoff": "si" if needs_human else ""
     }
 
+    empty = {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+
+    for i, fut in enumerate(futures):
+        if not fut.done():
+            fut.set_result(result if i == 0 else empty)
+
+@app.post("/chat")
+async def chat(request: Request):
+    data = await request.json()
+    user_id = data.get("user_id")
+    mensaje = data.get("mensaje")
+
+    if not user_id or not mensaje:
+        return {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+
+    if mensaje.strip().lower() == "resetbot":
+        save_history(user_id, [])
+        return {"msg1": "Conversación reseteada ✅", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+
+    if user_id not in user_buffers:
+        user_buffers[user_id] = []
+    if user_id not in user_futures:
+        user_futures[user_id] = []
+
+    user_buffers[user_id].append(mensaje)
+
+    fut = asyncio.get_event_loop().create_future()
+    user_futures[user_id].append(fut)
+
+    if user_id in user_timers:
+        user_timers[user_id].cancel()
+    user_timers[user_id] = asyncio.create_task(procesar_mensajes(user_id))
+
+    return await fut
+
 @app.get("/")
 async def health():
     return {"status": "ok"}
+
