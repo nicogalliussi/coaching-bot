@@ -1,6 +1,5 @@
 import os
 import asyncio
-import httpx
 from fastapi import FastAPI, Request
 from anthropic import Anthropic
 from pinecone import Pinecone
@@ -12,7 +11,6 @@ app = FastAPI()
 client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
 index = pc.Index("coaching-bot")
-MANYCHAT_API_KEY = os.environ.get("MANYCHAT_API_KEY")
 
 pending = {}
 
@@ -65,64 +63,6 @@ def save_history(user_id, messages):
         conn.close()
     except Exception as e:
         print(f"Error save_history: {e}")
-
-async def enviar_mensaje_manychat(subscriber_id, texto):
-    url = "https://api.manychat.com/fb/sending/sendContent"
-    headers = {
-        "Authorization": f"Bearer {MANYCHAT_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "subscriber_id": subscriber_id,
-        "message_tag": "HUMAN_AGENT",
-        "data": {
-            "version": "v2",
-            "content": {
-                "messages": [{"type": "text", "text": texto}]
-            }
-        }
-    }
-    async with httpx.AsyncClient() as client_http:
-        r = await client_http.post(url, json=payload, headers=headers)
-        print(f"ManyChat: {r.status_code} - {r.text}")
-
-async def procesar_mensaje(user_id, mensaje, token):
-    await asyncio.sleep(25)
-
-    if pending.get(user_id) is not token:
-        return
-
-    historia = get_history(user_id)
-
-    contexto = buscar_contexto(mensaje)
-    system = SYSTEM_PROMPT
-    if contexto:
-        system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
-
-    historia.append({"role": "user", "content": mensaje})
-    if len(historia) > 20:
-        historia = historia[-20:]
-
-    respuesta = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=400,
-        system=system,
-        messages=historia
-    )
-
-    texto = respuesta.content[0].text
-    needs_human = "[[HUMANO]]" in texto
-    texto_limpio = texto.replace("[[HUMANO]]", "").strip()
-
-    historia.append({"role": "assistant", "content": texto_limpio})
-    save_history(user_id, historia)
-
-    lineas = [l.strip() for l in texto_limpio.split("\n") if l.strip()]
-
-    for linea in lineas:
-        if linea:
-            await enviar_mensaje_manychat(user_id, linea)
-            await asyncio.sleep(1)
 
 @app.on_event("startup")
 async def startup():
@@ -253,19 +193,49 @@ async def chat(request: Request):
     user_id = data.get("user_id")
     mensaje = data.get("mensaje")
 
-    print(f"user_id recibido: {user_id} | mensaje: {mensaje}")
+    if not user_id or not mensaje:
+        return {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
 
-    if mensaje and mensaje.strip().lower() == "resetbot":
+    if mensaje.strip().lower() == "resetbot":
         save_history(user_id, [])
-        await enviar_mensaje_manychat(user_id, "Conversación reseteada ✅")
-        return {"status": "ok"}
+        return {"msg1": "Conversación reseteada ✅", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
 
-    token = object()
-    pending[user_id] = token
+    historia = get_history(user_id)
 
-    asyncio.create_task(procesar_mensaje(user_id, mensaje, token))
+    contexto = buscar_contexto(mensaje)
+    system = SYSTEM_PROMPT
+    if contexto:
+        system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
 
-    return {"status": "ok"}
+    historia.append({"role": "user", "content": mensaje})
+    if len(historia) > 20:
+        historia = historia[-20:]
+
+    respuesta = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        system=system,
+        messages=historia
+    )
+
+    texto = respuesta.content[0].text
+    needs_human = "[[HUMANO]]" in texto
+    texto_limpio = texto.replace("[[HUMANO]]", "").strip()
+
+    historia.append({"role": "assistant", "content": texto_limpio})
+    save_history(user_id, historia)
+
+    lineas = [l.strip() for l in texto_limpio.split("\n") if l.strip()]
+    while len(lineas) < 4:
+        lineas.append("")
+
+    return {
+        "msg1": lineas[0],
+        "msg2": lineas[1],
+        "msg3": lineas[2],
+        "msg4": lineas[3],
+        "handoff": "si" if needs_human else ""
+    }
 
 @app.get("/")
 async def health():
