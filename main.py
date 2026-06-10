@@ -252,6 +252,8 @@ async def chat(request: Request):
     user_id = data.get("user_id")
     mensaje = data.get("mensaje")
 
+    print(f"user_id recibido: {user_id} | mensaje: {mensaje}")
+
     if mensaje and mensaje.strip().lower() == "resetbot":
         save_history(user_id, [])
         await enviar_mensaje_manychat(user_id, "Conversación reseteada ✅")
