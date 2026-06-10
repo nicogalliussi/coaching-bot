@@ -74,6 +74,7 @@ async def enviar_mensaje_manychat(subscriber_id, texto):
     }
     payload = {
         "subscriber_id": subscriber_id,
+        "message_tag": "HUMAN_AGENT",
         "data": {
             "version": "v2",
             "content": {
