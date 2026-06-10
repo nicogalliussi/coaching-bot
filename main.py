@@ -122,66 +122,13 @@ def buscar_contexto(mensaje):
     except:
         return ""
 
-# Debounce state
-user_buffers = {}   # user_id -> [mensajes]
-user_futures = {}   # user_id -> [futures]
-user_timers = {}    # user_id -> Task
+# Lock por usuario para evitar race conditions
+user_locks = {}
 
-DEBOUNCE_SECONDS = 10
-
-async def procesar_mensajes(user_id: str):
-    await asyncio.sleep(DEBOUNCE_SECONDS)
-
-    mensajes = user_buffers.pop(user_id, [])
-    futures = user_futures.pop(user_id, [])
-    user_timers.pop(user_id, None)
-
-    if not mensajes or not futures:
-        return
-
-    mensaje_combinado = "\n".join(mensajes)
-
-    historia = get_history(user_id)
-    contexto = buscar_contexto(mensaje_combinado)
-    system = SYSTEM_PROMPT
-    if contexto:
-        system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
-
-    historia.append({"role": "user", "content": mensaje_combinado})
-    if len(historia) > 20:
-        historia = historia[-20:]
-
-    respuesta = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=400,
-        system=system,
-        messages=historia
-    )
-
-    texto = respuesta.content[0].text
-    needs_human = "[[HUMANO]]" in texto
-    texto_limpio = texto.replace("[[HUMANO]]", "").strip()
-
-    historia.append({"role": "assistant", "content": texto_limpio})
-    save_history(user_id, historia)
-
-    lineas = [l.strip() for l in texto_limpio.split("\n") if l.strip()]
-    while len(lineas) < 4:
-        lineas.append("")
-
-    result = {
-        "msg1": lineas[0],
-        "msg2": lineas[1],
-        "msg3": lineas[2],
-        "msg4": lineas[3],
-        "handoff": "si" if needs_human else ""
-    }
-
-    empty = {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
-
-    for i, fut in enumerate(futures):
-        if not fut.done():
-            fut.set_result(result if i == 0 else empty)
+def get_lock(user_id):
+    if user_id not in user_locks:
+        user_locks[user_id] = asyncio.Lock()
+    return user_locks[user_id]
 
 @app.post("/chat")
 async def chat(request: Request):
@@ -196,22 +143,44 @@ async def chat(request: Request):
         save_history(user_id, [])
         return {"msg1": "Conversación reseteada ✅", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
 
-    if user_id not in user_buffers:
-        user_buffers[user_id] = []
-    if user_id not in user_futures:
-        user_futures[user_id] = []
+    async with get_lock(user_id):
+        historia = get_history(user_id)
+        contexto = buscar_contexto(mensaje)
+        system = SYSTEM_PROMPT
+        if contexto:
+            system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
 
-    user_buffers[user_id].append(mensaje)
+        historia.append({"role": "user", "content": mensaje})
+        if len(historia) > 20:
+            historia = historia[-20:]
 
-    fut = asyncio.get_event_loop().create_future()
-    user_futures[user_id].append(fut)
+        respuesta = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=400,
+            system=system,
+            messages=historia
+        )
 
-    if user_id in user_timers:
-        user_timers[user_id].cancel()
-    user_timers[user_id] = asyncio.create_task(procesar_mensajes(user_id))
+        texto = respuesta.content[0].text
+        needs_human = "[[HUMANO]]" in texto
+        texto_limpio = texto.replace("[[HUMANO]]", "").strip()
 
-    return await fut
+        historia.append({"role": "assistant", "content": texto_limpio})
+        save_history(user_id, historia)
+
+        lineas = [l.strip() for l in texto_limpio.split("\n") if l.strip()]
+        while len(lineas) < 4:
+            lineas.append("")
+
+        return {
+            "msg1": lineas[0],
+            "msg2": lineas[1],
+            "msg3": lineas[2],
+            "msg4": lineas[3],
+            "handoff": "si" if needs_human else ""
+        }
 
 @app.get("/")
 async def health():
     return {"status": "ok"}
+
