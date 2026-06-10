@@ -1,3 +1,73 @@
+import os
+import asyncio
+from fastapi import FastAPI, Request
+from anthropic import Anthropic
+from pinecone import Pinecone
+import psycopg2
+from psycopg2.extras import Json
+
+app = FastAPI()
+
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+pc = Pinecone(api_key=os.environ.get("PINECONE_API_KEY"))
+index = pc.Index("coaching-bot")
+
+pending = {}
+
+def get_db():
+    return psycopg2.connect(os.environ.get("DATABASE_URL"))
+
+def init_db():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversaciones (
+                user_id TEXT PRIMARY KEY,
+                messages JSONB NOT NULL DEFAULT '[]',
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("DB inicializada OK")
+    except Exception as e:
+        print(f"Error init DB: {e}")
+
+def get_history(user_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT messages FROM conversaciones WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else []
+    except Exception as e:
+        print(f"Error get_history: {e}")
+        return []
+
+def save_history(user_id, messages):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO conversaciones (user_id, messages, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET messages = EXCLUDED.messages, updated_at = NOW()
+        """, (user_id, Json(messages)))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error save_history: {e}")
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+
 SYSTEM_PROMPT = """Sos Nico Galliussi de Método Flow Music hablando por Instagram DM. Tu objetivo es calificar prospectos, entender su situación, y llevarlos a agendar una Sesión de Claridad gratuita.
 
 VOZ Y ESTILO - CRÍTICO:
@@ -100,3 +170,72 @@ EJEMPLOS DE TUS FRASES REALES:
 - "okok, vale.."
 - "claro claro.."
 - "siis.." """
+
+def buscar_contexto(mensaje):
+    try:
+        resultados = index.search(
+            namespace="chats",
+            query={"inputs": {"text": mensaje}, "top_k": 3},
+            fields=["text", "source"]
+        )
+        contexto = ""
+        for r in resultados.get("result", {}).get("hits", []):
+            texto = r.get("fields", {}).get("text", "")
+            if texto:
+                contexto += texto[:500] + "\n---\n"
+        return contexto
+    except:
+        return ""
+
+@app.post("/chat")
+async def chat(request: Request):
+    data = await request.json()
+    user_id = data.get("user_id")
+    mensaje = data.get("mensaje")
+
+    token = object()
+    pending[user_id] = token
+    await asyncio.sleep(6)
+    if pending.get(user_id) is not token:
+        return {"msg1": "", "msg2": "", "msg3": "", "msg4": "", "handoff": ""}
+
+    historia = get_history(user_id)
+
+    contexto = buscar_contexto(mensaje)
+    system = SYSTEM_PROMPT
+    if contexto:
+        system += f"\n\nEJEMPLOS DE CONVERSACIONES REALES SIMILARES:\n{contexto}"
+
+    historia.append({"role": "user", "content": mensaje})
+    if len(historia) > 20:
+        historia = historia[-20:]
+
+    respuesta = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        system=system,
+        messages=historia
+    )
+
+    texto = respuesta.content[0].text
+    needs_human = "[[HUMANO]]" in texto
+    texto_limpio = texto.replace("[[HUMANO]]", "").strip()
+
+    historia.append({"role": "assistant", "content": texto_limpio})
+    save_history(user_id, historia)
+
+    lineas = [l.strip() for l in texto_limpio.split("\n") if l.strip()]
+    while len(lineas) < 4:
+        lineas.append("")
+
+    return {
+        "msg1": lineas[0],
+        "msg2": lineas[1],
+        "msg3": lineas[2],
+        "msg4": lineas[3],
+        "handoff": "si" if needs_human else ""
+    }
+
+@app.get("/")
+async def health():
+    return {"status": "ok"}
